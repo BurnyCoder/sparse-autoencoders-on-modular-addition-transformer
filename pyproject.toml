@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-modsae = "modsae.cli:main"
+modsae = "modsae.cli:main"  # same as `python run.py`
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]
