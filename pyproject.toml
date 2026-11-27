@@ -1,0 +1,49 @@
+[project]
+name = "modsae"
+version = "0.1.0"
+description = "Sparse autoencoders on the grokked modular-addition transformer (Nanda et al. 2023): ring-geometry features and steering through the MLP."
+readme = "README.md"
+authors = [{ name = "Libor Burian" }]
+license = "MIT"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "einops>=0.8.2",
+    "huggingface-hub>=2.5.0",
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.5",
+    "pandas>=3.1.1",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.4",
+    "sae-lens>=6.56.4",
+    "scikit-learn>=1.9.1",
+    "scipy>=1.18.1",
+    "torch>=2.11.0",
+    "trackio>=0.45.1",
+    "transformer-lens>=4.4.1",
+    "typst>=0.15.2",
+]
+
+[project.scripts]
+modsae = "modsae.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+# PyTorch CUDA wheels: the RTX 5070 (Blackwell, sm_120) needs CUDA >= 12.8 builds.
+# Pattern from the uv PyTorch guide: https://docs.astral.sh/uv/guides/integration/pytorch/
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
