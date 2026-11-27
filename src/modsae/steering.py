@@ -218,19 +218,33 @@ def signed_steering(sae, xt, st, w, feat, a_idx, K, variant, X, n_inputs: int = 
     base = _logits(x, w, x, variant)
     W_dec = sae.W_dec.detach().float().cpu()
     sym, dose = [], {c: [] for c in C_GRID}
+    argmax_stats = []
     for j in ring_mask.nonzero().flatten().tolist():
         k = int(table["k_key"][j])
         d = W_dec[a_idx[j]]
-        phases = {}
+        phases, preds = {}, {}
         for c in C_GRID:
             for sgn in (1, -1):
-                dl = _logits(interventions.signed_steer(x, d, sgn * c, scale), w, x, variant) - base
+                lg = _logits(interventions.signed_steer(x, d, sgn * c, scale), w, x, variant)
+                dl = lg - base
                 spec = torch.fft.fft(dl.double(), dim=1)[:, k]
                 phases[(sgn, c)] = -torch.angle(spec)
+                preds[(sgn, c)] = lg.argmax(-1)
             dose[c].append(torch.cos(phases[(1, c)] - phases[(-1, c)]).mean().item())
         sym.append(dose[C_GRID[-1]][-1])
+        # exploratory, argmax level at the largest |c|: is the steered output input-independent, and the same for ±c?
+        cmax = C_GRID[-1]
+        pp, pm = preds[(1, cmax)], preds[(-1, cmax)]
+        mode_p = torch.mode(pp).values.item()
+        argmax_stats.append({"feature": int(a_idx[j]), "k": k, "mode_output_plus": mode_p,
+                             "mode_fraction_plus": (pp == mode_p).float().mean().item(),
+                             "mode_fraction_minus": (pm == torch.mode(pm).values).float().mean().item(),
+                             "same_output_plus_minus": (pp == pm).float().mean().item(),
+                             "changed_from_clean": (pp != base.argmax(-1)).float().mean().item()})
     return {"H5_sign_symmetry": float(np.mean(sym)), "H5_sign_symmetry_by_c": {str(c): float(np.mean(v)) for c, v in dose.items()},
-            "H5_n_features": len(sym), "H5_per_feature": sym}
+            "H5_n_features": len(sym), "H5_per_feature": sym, "H5_argmax_stats": argmax_stats,
+            "H5_mean_same_output_plus_minus": float(np.mean([s["same_output_plus_minus"] for s in argmax_stats])),
+            "H5_mean_mode_fraction_plus": float(np.mean([s["mode_fraction_plus"] for s in argmax_stats]))}
 
 
 # ---------------------------------------------------------------- mlp_post sanity checks

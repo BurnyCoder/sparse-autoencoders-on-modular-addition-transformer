@@ -6,9 +6,11 @@ Phases (each idempotent; pass --force to recompute):
   train-sae     train + evaluate one SAE on a model run's activations
   characterize  per-feature table, rings, H1/H1b/H2 metrics for an SAE run
   steer         H3/H4/H5 (resid_mid SAE) or mlp_post sanity checks (mlp_post SAE)
+  sweep         train + characterize SAEs over sites x k x m x seeds (resumable)
   dev           the whole dev-seed pipeline (base_s999 + HF cross-check + resid_mid/mlp_post SAEs)
   smoke         tiny end-to-end run in cache/smoke (checks the wiring in a few minutes)
   report        regenerate tables and figures from results/
+  site          export weights, SAEs, tables and figures for the GitHub Pages explorer
 """
 
 from __future__ import annotations
@@ -47,7 +49,11 @@ def run_dev(epochs: int, samples: int, force: bool, sae_seeds=(0,), include_hf: 
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("phase", choices=["train-base", "mechanism", "train-sae", "characterize", "steer", "dev", "smoke", "report"])
+    ap.add_argument("phase", choices=["train-base", "mechanism", "train-sae", "characterize", "steer", "dev", "sweep", "smoke", "report", "site"])
+    ap.add_argument("--sites", default="resid_mid,mlp_post")
+    ap.add_argument("--ks", default="2,3,4,6,8,12,16")
+    ap.add_argument("--ms", default="64,128,256,512")
+    ap.add_argument("--seeds", default="0")
     ap.add_argument("--seed", type=int, default=999)
     ap.add_argument("--constattn", action="store_true")
     ap.add_argument("--epochs", type=int, default=40_000)
@@ -63,6 +69,7 @@ def main(argv=None) -> None:
     ap.add_argument("--l0", type=float, default=1.0)
     ap.add_argument("--sae", default="")
     ap.add_argument("--test-split", action="store_true", help="use test δ / s* (confirmatory) instead of dev")
+    ap.add_argument("--status", default="")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args(argv)
 
@@ -90,6 +97,21 @@ def main(argv=None) -> None:
         fn(args.sae, force=args.force, use_dev_split=not args.test_split)
     elif args.phase == "dev":
         run_dev(epochs=args.epochs, samples=args.samples, force=args.force)
+    elif args.phase == "sweep":
+        from modsae.config import SAEConfig
+
+        for site in args.sites.split(","):
+            for k in map(int, args.ks.split(",")):
+                for m in map(int, args.ms.split(",")):
+                    for seed in map(int, args.seeds.split(",")):
+                        cfg = SAEConfig(base_run=args.base_run, site=site, arch=args.arch, d_sae=m, k=k, seed=seed,
+                                        total_samples=args.samples, variant=args.variant)
+                        phases.sae_phase(cfg, force=args.force)
+                        phases.characterize_phase(cfg.run_id, force=args.force)
+    elif args.phase == "site":
+        from modsae import site_export
+
+        print(site_export.build_site(args.run, [r for r in args.sae.split(",") if r], status_html=args.status))
     elif args.phase == "report":
         from modsae import report
 

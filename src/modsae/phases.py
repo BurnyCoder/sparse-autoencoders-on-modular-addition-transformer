@@ -175,6 +175,13 @@ def evaluate_sae(sae, site: str, grid: dict, split: dict, acts: torch.Tensor | N
            "spliced": metrics.output_metrics(spl, labels[te], clean), "zero_ablation": metrics.output_metrics(zero, labels[te], clean)}
     res["train_test_fvu_gap"] = res["test_fvu"] - res["train_fvu"]
     res["loss_recovered"] = metrics.loss_recovered(res["spliced"]["ce"], res["clean"]["ce"], res["zero_ablation"]["ce"])
+    # SAE-val block: the only numbers allowed for configuration selection (preregistration §3)
+    va = split["val"]
+    z_va = interventions.encode(sae, acts[va])
+    xh_va = interventions.sae_write(sae, acts[va], z_va, "spliced")
+    spl_va = spliced_logits(site, xh_va, va, grid)
+    res["val"] = {"fvu": metrics.fvu(acts[va], xh_va), "logit_fvu": metrics.fvu(grid["logits"][va], spl_va),
+                  "l0": (z_va > 0).float().sum(-1).mean().item(), "spliced": metrics.output_metrics(spl_va, labels[va], grid["logits"][va])}
     if site == "mlp_post":
         W_L = grid["weights"]["W_L"]
         alive = (z_tr > 0).any(0)
