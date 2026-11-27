@@ -178,6 +178,16 @@ Anything not in this list is fixed by stage 1.
 
 ---
 
+## Stage-1 clarifications (2026-11-27, written during implementation, before any real model was trained)
+
+These clarify definitions. They were made after only the pipeline smoke test (a 16k-epoch throwaway model in `cache/smoke/`, which is not used for any reported result) and before the dev base model existed.
+
+1. **Meaning of "resid_mid intervention".** In TransformerLens 4 the alias `blocks.0.hook_resid_mid` resolves to `blocks.0.ln2.hook_in`. Overwriting it changes only the MLP branch input, not the skip connection (verified by a unit test). In this study a resid_mid intervention **replaces the full residual stream after attention**, i.e. both the MLP input and the skip path, which is TransformerLens-3 `hook_resid_mid` semantics. It is implemented by overwriting the attention output with x − resid_pre. The MLP-input-only variant (`mlp_input`) is always reported as secondary. All H3–H5 numbers are given for both.
+2. **Minimum-norm oracle at mlp_post.** The target logit change is Nanda et al.'s ideal logit vector Σ_{k∈K} cos(w_k(c − s*)). The pseudoinverse of W_L is truncated to its top 2|K| singular directions, because W_L is effectively rank 2|K| (Nanda et al.) and a full pseudoinverse amplifies near-null directions. This is a sanity-check baseline, not a hypothesis test.
+3. **Ring calibration for H4.** For each unsupervised ring, an input's ring angle is the activation-weighted circular mean of its active members' angles. Over SAE-train inputs we choose the frequency k, the sign and the family that maximize the circular resultant length R: "full" (θ ≈ ±w_k s) or "half" (2θ ≈ ±w_k s, the A+B prediction). Only rings with R ≥ 0.5 are transported. The transport angle for shift δ is slope·δ. Oracle-plane and PCA-plane rotations are calibrated the same way.
+
+---
+
 ## Stage 2
 
 (Appended after dev-seed exploration and before confirmatory runs.)
