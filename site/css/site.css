@@ -1,0 +1,33 @@
+/* Palette and surfaces from the dataviz reference palette (light + selected dark steps). */
+.viz-root {
+  color-scheme: light;
+  --surface-1: #fcfcfb; --text-primary: #0b0b0b; --text-secondary: #52514e; --grid: #e6e5e1;
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --text-primary: #f0efec; --text-secondary: #c3c2b7; --grid: #383835;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+  }
+}
+body { margin: 0; background: #fcfcfb; }
+@media (prefers-color-scheme: dark) { body { background: #1a1a19; } }
+.viz-root { max-width: 980px; margin: 0 auto; padding: 24px; font: 15px/1.5 system-ui, sans-serif; color: var(--text-primary); background: var(--surface-1); }
+h1 { font-size: 1.6rem; margin-bottom: 0.2rem; }
+h2 { font-size: 1.2rem; margin-top: 2rem; border-bottom: 1px solid var(--grid); padding-bottom: 4px; }
+.byline, figcaption, footer, .info { color: var(--text-secondary); font-size: 0.9rem; }
+a { color: var(--series-1); }
+.figure { max-width: 100%; margin: 8px 0; border: 1px solid var(--grid); border-radius: 4px; }
+.controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin: 10px 0; }
+.row { display: flex; flex-wrap: wrap; gap: 18px; }
+figure { margin: 0; }
+canvas { image-rendering: pixelated; border: 1px solid var(--grid); }
+select, input, button { font: inherit; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--grid); border-radius: 4px; padding: 2px 6px; }
+button { cursor: pointer; }
+table { border-collapse: collapse; font-size: 0.82rem; margin: 10px 0; display: block; overflow-x: auto; }
+th, td { border-bottom: 1px solid var(--grid); padding: 3px 7px; text-align: right; white-space: nowrap; }
+th { color: var(--text-secondary); font-weight: 600; }
+#tooltip { position: fixed; pointer-events: none; display: none; background: #0b0b0b; color: #f0efec; padding: 4px 8px; border-radius: 4px; font: 12px system-ui, sans-serif; z-index: 10; }
+svg text { fill: var(--text-secondary); font: 11px system-ui, sans-serif; }
+.status-ok { color: var(--series-3); }
