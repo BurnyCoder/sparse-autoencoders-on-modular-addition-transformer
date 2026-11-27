@@ -10,6 +10,8 @@ Phases (each idempotent; pass --force to recompute):
   dev           the whole dev-seed pipeline (base_s999 + HF cross-check + resid_mid/mlp_post SAEs)
   smoke         tiny end-to-end run in cache/smoke (checks the wiring in a few minutes)
   report        regenerate tables and figures from results/
+  confirm       stage-2 confirmatory runs for --confirm-seeds (frozen config, test split)
+  aggregate     hierarchical bootstrap + Holm over confirmatory results
   site          export weights, SAEs, tables and figures for the GitHub Pages explorer
 """
 
@@ -24,7 +26,7 @@ def _sae_cfg(args):
     from modsae.config import SAEConfig
 
     return SAEConfig(base_run=args.base_run, site=args.site, arch=args.arch, d_sae=args.m, k=args.k, seed=args.seed,
-                     total_samples=args.samples, variant=args.variant, l1_coefficient=args.l1, l0_coefficient=args.l0)
+                     total_samples=args.samples, variant=args.variant, l1_coefficient=args.l1, l0_coefficient=args.l0, lr=args.lr, center=args.center)
 
 
 def run_dev(epochs: int, samples: int, force: bool, sae_seeds=(0,), include_hf: bool = True) -> None:
@@ -49,7 +51,7 @@ def run_dev(epochs: int, samples: int, force: bool, sae_seeds=(0,), include_hf: 
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("phase", choices=["train-base", "mechanism", "train-sae", "characterize", "steer", "dev", "sweep", "smoke", "report", "site"])
+    ap.add_argument("phase", choices=["train-base", "mechanism", "train-sae", "characterize", "steer", "dev", "sweep", "smoke", "report", "site", "confirm", "aggregate"])
     ap.add_argument("--sites", default="resid_mid,mlp_post")
     ap.add_argument("--ks", default="2,3,4,6,8,12,16")
     ap.add_argument("--ms", default="64,128,256,512")
@@ -66,10 +68,13 @@ def main(argv=None) -> None:
     ap.add_argument("--samples", type=int, default=3_000_000)
     ap.add_argument("--variant", default="")
     ap.add_argument("--l1", type=float, default=5.0)
+    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--center", action="store_true")
     ap.add_argument("--l0", type=float, default=1.0)
     ap.add_argument("--sae", default="")
     ap.add_argument("--test-split", action="store_true", help="use test δ / s* (confirmatory) instead of dev")
     ap.add_argument("--status", default="")
+    ap.add_argument("--confirm-seeds", default="0,1,2,3,4,5,6,7,8,9")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args(argv)
 
@@ -105,9 +110,20 @@ def main(argv=None) -> None:
                 for m in map(int, args.ms.split(",")):
                     for seed in map(int, args.seeds.split(",")):
                         cfg = SAEConfig(base_run=args.base_run, site=site, arch=args.arch, d_sae=m, k=k, seed=seed,
-                                        total_samples=args.samples, variant=args.variant)
+                                        total_samples=args.samples, variant=args.variant, lr=args.lr, center=args.center)
                         phases.sae_phase(cfg, force=args.force)
                         phases.characterize_phase(cfg.run_id, force=args.force)
+    elif args.phase == "confirm":
+        from modsae import confirm
+
+        for seed in map(int, args.confirm_seeds.split(",")):
+            confirm.run_seed(seed)
+    elif args.phase == "aggregate":
+        from modsae import confirm
+
+        summary = confirm.aggregate()
+        for h, r in summary["hypotheses"].items():
+            print(h, r.get("status"), r.get("point"), r.get("ci95"))
     elif args.phase == "site":
         from modsae import site_export
 

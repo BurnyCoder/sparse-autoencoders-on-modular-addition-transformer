@@ -97,6 +97,10 @@ def train_sae(cfg: SAEConfig, acts_train: torch.Tensor, acts_val: torch.Tensor, 
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(cfg.seed)  # SAE weight init uses the global RNG
     acts_train, acts_val = acts_train.to(device), acts_val.to(device)
+    mu = acts_train.mean(0) if cfg.center else torch.zeros_like(acts_train[0])
+    # Centering: SAELens initialises b_dec at 0; training on x − μ and folding μ into b_dec afterwards is exactly an SAE
+    # whose decoder bias starts at the data mean (Bricken et al. 2023 and Gao et al. 2024 initialise it at the geometric median).
+    acts_train, acts_val = acts_train - mu, acts_val - mu
     sae = TrainingSAE.from_dict(training_sae_config(cfg, acts_train.shape[1], device).to_dict())
     tracker = None
     if use_trackio:
@@ -122,6 +126,9 @@ def train_sae(cfg: SAEConfig, acts_train: torch.Tensor, acts_val: torch.Tensor, 
     if tracker is not None:
         tracker.finish()
     trained.save_inference_model(str(out_dir))
+    if cfg.center:
+        _fold_mean_into_b_dec(out_dir, mu.detach().float().cpu())
+        acts_train, acts_val = acts_train + mu, acts_val + mu  # evaluate the saved SAE on raw activations
     inference = load_sae(out_dir, device)
     with torch.no_grad():
         info = {"run_id": cfg.run_id, "config": cfg.to_dict(), "train_seconds": time.time() - t0,
@@ -131,6 +138,17 @@ def train_sae(cfg: SAEConfig, acts_train: torch.Tensor, acts_val: torch.Tensor, 
     if logger:
         logger.info("%s trained in %.0fs | train FVU %.4f | val FVU %.4f", cfg.run_id, info["train_seconds"], info["train_fvu"], info["val_fvu"])
     return inference, info
+
+
+def _fold_mean_into_b_dec(out_dir: Path, mu: torch.Tensor) -> None:
+    """With apply_b_dec_to_input, encode uses (x − b_dec) and decode adds b_dec, so b_dec' = b_dec + μ makes the SAE
+    trained on x − μ act identically on raw x."""
+    from safetensors.torch import load_file, save_file
+
+    path = out_dir / "sae_weights.safetensors"
+    w = load_file(str(path))
+    w["b_dec"] = w["b_dec"] + mu.to(w["b_dec"].dtype)
+    save_file(w, str(path))
 
 
 def load_sae(path: Path, device: str) -> SAE:

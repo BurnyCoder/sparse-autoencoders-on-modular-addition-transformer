@@ -43,9 +43,15 @@ def calibrate_angles(theta: torch.Tensor, s: torch.Tensor) -> dict:
 
     family 'full': θ ≈ sgn·w_k s + c; family 'half' (A+B / Pizza): 2θ ≈ sgn·w_k s + c (θ known mod π).
     Score = circular resultant length R. Returns the shift rule Δ(δ) = slope·δ.
+
+    For the half family the shift is the *group* half-angle: adding δ to the sum is adding 2⁻¹δ
+    (2⁻¹ ≡ (p+1)/2 = 57 mod 113) to both operands, which multiplies z_k = e^{iw a} + e^{iw b} by
+    exactly e^{i w_k·57·δ}. The naive real half-angle w_k δ/2 differs from it by π whenever k·δ is
+    odd (dev-seed finding; see the stage-2 preregistration).
     """
     ok = ~torch.isnan(theta)
     th, ss = theta[ok].double(), s[ok].double()
+    inv2 = (P + 1) // 2  # modular inverse of 2 for odd p
     best = {"R": -1.0}
     for k in range(1, (P - 1) // 2 + 1):
         w = 2 * math.pi * k / P
@@ -53,7 +59,8 @@ def calibrate_angles(theta: torch.Tensor, s: torch.Tensor) -> dict:
             for family, mult in (("full", 1.0), ("half", 2.0)):
                 R = abs(torch.exp(1j * (mult * th - sgn * w * ss)).mean()).item()
                 if R > best["R"]:
-                    best = {"R": R, "k": k, "sign": sgn, "family": family, "slope": sgn * w / mult}
+                    slope = sgn * w if family == "full" else sgn * 2 * math.pi * ((k * inv2) % P) / P
+                    best = {"R": R, "k": k, "sign": sgn, "family": family, "slope": slope}
     return best
 
 
@@ -143,12 +150,13 @@ def resid_mid_phase(run_id: str, force: bool = False, use_dev_split: bool = True
             r[f"H4_double_transport_{mode}_hits_plus_2delta"] = float(np.mean(succ_2d))
             r[f"H4_random_permutation_{mode}_success"] = float(np.mean(succ_perm))
         r.update(transport_baselines(X, w, K, tr, te, s, deltas, variant))
-        r.update(signed_steering(sae, xt, st, w, feat, a_idx, K, variant, X))
+        r.update(signed_steering(sae, xt, st, w, feat, a_idx, K, variant, X, Z_all=Z, s_all=s, tr=tr))
         res["variants"][variant] = r
-        log.info("%s [%s]: recon acc %.3f | H3 antipodal %.3f quarter %.3f | H4 transport %.3f (perm %.3f, oracle %.3f, pca %.3f) | H5 %.3f",
+        log.info("%s [%s]: recon acc %.3f | H3 antipodal %.3f quarter %.3f | H4 transport %.3f (perm %.3f, oracle %.3f, pca %.3f, fixed %.3f) | H5 %.3f | single-feature same± %.3f mode %.3f pref %.3f",
                  run_id, variant, r["spliced_recon_acc"], r["H3_antipodal_spliced_acc"], r["H3_quarter_spliced_acc"],
                  r["H4_transport_spliced_success"], r["H4_random_permutation_spliced_success"], r.get("oracle_rotation_success", float("nan")),
-                 r.get("pca_rotation_success", float("nan")), r.get("H5_sign_symmetry", float("nan")))
+                 r.get("pca_rotation_success", float("nan")), r.get("fixed_vector_shift_success", float("nan")), r.get("H5_sign_symmetry", float("nan")),
+                 r["single_feature_mean_same_output_plus_minus"], r["single_feature_mean_mode_fraction_plus"], r["single_feature_fraction_mode_is_preferred_sum"])
     _write(out, res)
     return res
 
@@ -166,22 +174,30 @@ def random_ring_permutation(labels: torch.Tensor, angle: torch.Tensor, good: dic
     return T
 
 
+def _key_basis(a: torch.Tensor, b: torch.Tensor, k: int) -> torch.Tensor:
+    """[cos w a, sin w a, cos w b, sin w b, cos w(a+b), sin w(a+b)] for frequency k (float64 columns)."""
+    w_ = 2 * math.pi * k / P
+    a, b = a.double(), b.double()
+    return torch.stack([torch.cos(w_ * a), torch.sin(w_ * a), torch.cos(w_ * b), torch.sin(w_ * b),
+                        torch.cos(w_ * (a + b)), torch.sin(w_ * (a + b))], 1)
+
+
 def transport_baselines(X, w, K, tr, te, s, deltas, variant) -> dict:
     """Oracle rotation in fitted Fourier planes, rotation in PCA planes, and the fixed-vector DiffMean shift."""
     out = {}
     mu = X.mean(0)
     xt, st = X[te], s[te]
-    # oracle: fitted planes for the true key frequencies, orientation/family calibrated on SAE-train
-    planes, slopes = {}, {}
-    for k in K:
-        plane = mechanism.fitted_plane(X, k, P)
-        theta, _ = mechanism.fitted_coords(X[tr], plane)
-        c = calibrate_angles(theta, s[tr])
-        planes[k], slopes[k] = plane, c["slope"]
-        out[f"oracle_plane_calibration_k{k}"] = c
+    # oracle (uses ground truth): shift the fitted key-frequency Fourier components of resid_mid exactly as the
+    # real input shift (a, b) -> (a + 57δ, b + 57δ) would (2·57 ≡ 1 mod 113, so the sum moves by δ), keeping the
+    # unexplained residual. Components: A+B lines [cos/sin w_k a, cos/sin w_k b] and sum line cos/sin w_k(a+b).
+    a, b = data.index_to_ab(torch.arange(P * P), P)
+    basis = lambda aa, bb: torch.cat([_key_basis(aa, bb, k) for k in K], 1)
+    coef = torch.linalg.lstsq(basis(a[tr], b[tr]), (X[tr] - mu).double()).solution  # fitted on SAE-train only
     succ = []
     for dlt in deltas.tolist():
-        x2 = interventions.rotate_in_planes(xt, planes, {k: slopes[k] * dlt for k in K}, mu)
+        t = 57 * dlt
+        delta_x = (basis(a[te] + t, b[te] + t) - basis(a[te], b[te])) @ coef
+        x2 = xt + delta_x.float()
         succ.append((_logits(x2, w, xt, variant).argmax(-1) == (st + dlt) % P).float().mean().item())
     out["oracle_rotation_success"] = float(np.mean(succ))
     # PCA planes: consecutive principal-component pairs, each calibrated on SAE-train
@@ -208,43 +224,87 @@ def transport_baselines(X, w, K, tr, te, s, deltas, variant) -> dict:
     return out
 
 
-def signed_steering(sae, xt, st, w, feat, a_idx, K, variant, X, n_inputs: int = 256) -> dict:
-    """H5: x + c·||x̄||·d_i for ring features; sign symmetry of the frequency-k phase of the logit change."""
+def signed_steering(sae, xt, st, w, feat, a_idx, K, variant, X, Z_all=None, s_all=None, tr=None, n_inputs: int = 256) -> dict:
+    """Signed single-feature steering x + c·||x̄||·d_i at resid_mid.
+
+    H5 (preregistered): for ring features, sign symmetry of the frequency-k phase of the logit change.
+    Exploratory: for every alive feature, at c = ±8 the steered argmax distribution: how input-independent
+    it is (mode fraction), whether +c and −c give the same answer, and whether the mode equals the
+    feature's preferred sum s_i = argmax_s E[z_i | a+b = s] (computed on SAE-train inputs).
+    """
     table, ring_mask = feat["table"], feat["ring_mask"]
-    if not K or not ring_mask.any():
-        return {}
     scale = X.norm(dim=-1).mean().item()
     x = xt[:n_inputs]
     base = _logits(x, w, x, variant)
     W_dec = sae.W_dec.detach().float().cpu()
     sym, dose = [], {c: [] for c in C_GRID}
-    argmax_stats = []
-    for j in ring_mask.nonzero().flatten().tolist():
-        k = int(table["k_key"][j])
+    stats = []
+    cmax = C_GRID[-1]
+    signed_cs = [sg * c for c in C_GRID for sg in (1, -1)]
+    # preferred sum and sum-selectivity of every alive feature (SAE-train inputs only)
+    pref, selectivity = [], []
+    for j in range(len(a_idx)):
+        zj = Z_all[tr, a_idx[j]] if Z_all is not None else None
+        if zj is None:
+            pref.append(None), selectivity.append(None)
+            continue
+        means = torch.zeros(P).index_add_(0, s_all[tr], zj) / torch.bincount(s_all[tr], minlength=P).clamp_min(1)
+        pref.append(int(means.argmax()))
+        selectivity.append((means.max() / means.sum().clamp_min(1e-12)).item())  # share of mean activation at the preferred sum
+    g = torch.Generator().manual_seed(0)
+    shuffled = torch.randperm(len(a_idx), generator=g).tolist()  # permutation null: another feature's preferred sum
+    for j in range(len(a_idx)):
         d = W_dec[a_idx[j]]
-        phases, preds = {}, {}
-        for c in C_GRID:
-            for sgn in (1, -1):
-                lg = _logits(interventions.signed_steer(x, d, sgn * c, scale), w, x, variant)
-                dl = lg - base
-                spec = torch.fft.fft(dl.double(), dim=1)[:, k]
-                phases[(sgn, c)] = -torch.angle(spec)
-                preds[(sgn, c)] = lg.argmax(-1)
-            dose[c].append(torch.cos(phases[(1, c)] - phases[(-1, c)]).mean().item())
-        sym.append(dose[C_GRID[-1]][-1])
-        # exploratory, argmax level at the largest |c|: is the steered output input-independent, and the same for ±c?
-        cmax = C_GRID[-1]
-        pp, pm = preds[(1, cmax)], preds[(-1, cmax)]
-        mode_p = torch.mode(pp).values.item()
-        argmax_stats.append({"feature": int(a_idx[j]), "k": k, "mode_output_plus": mode_p,
-                             "mode_fraction_plus": (pp == mode_p).float().mean().item(),
-                             "mode_fraction_minus": (pm == torch.mode(pm).values).float().mean().item(),
-                             "same_output_plus_minus": (pp == pm).float().mean().item(),
-                             "changed_from_clean": (pp != base.argmax(-1)).float().mean().item()})
-    return {"H5_sign_symmetry": float(np.mean(sym)), "H5_sign_symmetry_by_c": {str(c): float(np.mean(v)) for c, v in dose.items()},
-            "H5_n_features": len(sym), "H5_per_feature": sym, "H5_argmax_stats": argmax_stats,
-            "H5_mean_same_output_plus_minus": float(np.mean([s["same_output_plus_minus"] for s in argmax_stats])),
-            "H5_mean_mode_fraction_plus": float(np.mean([s["mode_fraction_plus"] for s in argmax_stats]))}
+        is_ring = bool(ring_mask[j]) and bool(K)
+        preds = {c: _logits(interventions.signed_steer(x, d, c, scale), w, x, variant).argmax(-1) for c in signed_cs}
+        if is_ring:
+            k = int(table["k_key"][j])
+            phases = {}
+            for c in signed_cs:
+                dl = _logits(interventions.signed_steer(x, d, c, scale), w, x, variant) - base
+                phases[c] = -torch.angle(torch.fft.fft(dl.double(), dim=1)[:, k])
+            for c in C_GRID:
+                dose[c].append(torch.cos(phases[c] - phases[-c]).mean().item())
+            sym.append(dose[cmax][-1])
+        pp, pm = preds[cmax], preds[-cmax]
+        mode_p, mode_m = torch.mode(pp).values.item(), torch.mode(pm).values.item()
+        row = {"feature": int(a_idx[j]), "ring": is_ring, "k": int(table["k_key"][j]) if K else None,
+               "mode_output_plus": mode_p, "mode_output_minus": mode_m,
+               "mode_fraction_plus": (pp == mode_p).float().mean().item(), "mode_fraction_minus": (pm == mode_m).float().mean().item(),
+               "same_output_plus_minus": (pp == pm).float().mean().item(), "changed_from_clean": (pp != base.argmax(-1)).float().mean().item()}
+        if pref[j] is not None:
+            sp, ss = pref[j], pref[shuffled[j]]
+            keep = st[:len(x)] != sp  # inputs whose true answer is not already the preferred sum
+            row.update(preferred_sum=sp, selectivity=selectivity[j], mode_plus_is_preferred_sum=sp == mode_p, mode_minus_is_preferred_sum=sp == mode_m,
+                       write_rate={str(c): (preds[c][keep] == sp).float().mean().item() for c in signed_cs},
+                       write_rate_shuffled={str(c): (preds[c][st[:len(x)] != ss] == ss).float().mean().item() for c in signed_cs})
+        stats.append(row)
+    # matched control: random unit directions in resid_mid space, same magnitude
+    rand_stats = []
+    for d in interventions.random_unit_directions(64, X.shape[1], seed=0):
+        pp = _logits(interventions.signed_steer(x, d, cmax, scale), w, x, variant).argmax(-1)
+        pm = _logits(interventions.signed_steer(x, d, -cmax, scale), w, x, variant).argmax(-1)
+        rand_stats.append({"mode_fraction_plus": (pp == torch.mode(pp).values).float().mean().item(),
+                           "same_output_plus_minus": (pp == pm).float().mean().item()})
+    out = {"single_feature_stats": stats,
+           "random_direction_mean_mode_fraction_plus": float(np.mean([r["mode_fraction_plus"] for r in rand_stats])),
+           "random_direction_mean_same_output_plus_minus": float(np.mean([r["same_output_plus_minus"] for r in rand_stats])),
+           "single_feature_mean_same_output_plus_minus": float(np.mean([r["same_output_plus_minus"] for r in stats])),
+           "single_feature_mean_mode_fraction_plus": float(np.mean([r["mode_fraction_plus"] for r in stats])),
+           "single_feature_fraction_mode_is_preferred_sum": float(np.mean([r.get("mode_plus_is_preferred_sum", False) for r in stats]))}
+    if stats and "write_rate" in stats[0]:
+        out["write_rate_by_c"] = {str(c): float(np.mean([r["write_rate"][str(c)] for r in stats])) for c in signed_cs}
+        out["write_rate_shuffled_by_c"] = {str(c): float(np.mean([r["write_rate_shuffled"][str(c)] for r in stats])) for c in signed_cs}
+        from scipy.stats import spearmanr
+
+        sel = [r["selectivity"] for r in stats]
+        wr = [max(r["write_rate"][str(cmax)], r["write_rate"][str(-cmax)]) for r in stats]
+        rho = spearmanr(sel, wr)
+        out["selectivity_vs_write_spearman"] = {"rho": float(rho.statistic), "p": float(rho.pvalue), "n": len(sel)}
+    if sym:
+        out.update({"H5_sign_symmetry": float(np.mean(sym)), "H5_sign_symmetry_by_c": {str(c): float(np.mean(v)) for c, v in dose.items()},
+                    "H5_n_features": len(sym), "H5_per_feature": sym})
+    return out
 
 
 # ---------------------------------------------------------------- mlp_post sanity checks

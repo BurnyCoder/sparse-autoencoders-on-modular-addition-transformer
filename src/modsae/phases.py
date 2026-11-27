@@ -247,6 +247,8 @@ def characterize_phase(run_id: str, force: bool = False) -> dict:
            "H1_median_nonkey_r2": torch.nanmedian(table["r2_nonkey_median"]).item(),
            "median_r2_best_any_k": torch.nanmedian(table["r2_best"]).item(),
            "median_r2_key_best": torch.nanmedian(table["r2_key_best"]).item() if K else None,
+           "median_additive_multi_k_r2": torch.nanmedian(table["additive_multi_k_r2"]).item() if K else None,
+           "fraction_alive_never_active_on_test": float((torch.isnan(table["r2_best"]) | (table["r2_best"] <= -1)).float().mean()),
            "median_torus_r2_ring": torch.nanmedian(table["torus_r2"][ring_mask]).item() if ring_mask.any() else None,
            "median_gamma_ring": table["gamma"][ring_mask].median().item() if ring_mask.any() else None,
            "median_odd_fraction_ring": torch.nanmedian(table["odd_fraction"][ring_mask]).item() if ring_mask.any() else None,

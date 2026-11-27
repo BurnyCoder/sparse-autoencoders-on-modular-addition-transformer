@@ -24,3 +24,13 @@ def test_batchtopk_sae_learns_and_reloads(tmp_path):
         l0 = (sae.encode(x[5000:]) > 0).float().sum(-1).mean().item()
     assert 1 <= l0 <= 12  # inference JumpReLU threshold keeps L0 near k
     assert torch.allclose(sae.W_dec.norm(dim=1), torch.ones(64), atol=1e-4)  # unit-norm decoder rows
+
+
+def test_centering_fold_is_exact_on_raw_inputs(tmp_path):
+    x = _synthetic() + 5.0  # large shared offset, like non-negative MLP activations
+    cfg = SAEConfig(site="toy", d_sae=64, k=4, total_samples=150_000, batch_size=256, center=True)
+    sae, info = sae_train.train_sae(cfg, x[:5000], x[5000:], "cpu", out_dir=tmp_path, use_trackio=False)
+    assert info["val_fvu"] < 0.5  # evaluated on raw (uncentred) inputs after folding μ into b_dec
+    with torch.no_grad():
+        recon = sae.decode(sae.encode(x[5000:]))
+    assert (recon - x[5000:]).pow(2).mean() < x[5000:].var(0).sum() / 32 * 0.5

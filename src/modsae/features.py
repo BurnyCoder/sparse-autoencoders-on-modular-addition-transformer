@@ -70,6 +70,12 @@ def torus_fit(F: torch.Tensor, k: int, p: int, train: torch.Tensor, test: torch.
     return _lstsq_r2(B, F.double(), train, test)[2]
 
 
+def features_basis_k(p: int, k: int, H: int) -> torch.Tensor:
+    """r_k · [1, cos hψ_k, sin hψ_k]_{h<=H} over the grid (γ = 1), one block of the additive multi-frequency model."""
+    psi, r = mechanism.analytic_coords(p, k)
+    return harmonic_basis(psi, H) * r.double()[:, None]
+
+
 def tuning_stats(coef: torch.Tensor, H: int, n_grid: int = 360) -> dict:
     """From g's Fourier coefficients: width (fraction of circle with g >= 0.5 max g), preferred angle, odd-harmonic fraction."""
     theta = torch.linspace(-math.pi, math.pi, n_grid + 1)[:-1]
@@ -121,6 +127,10 @@ def characterize(F: torch.Tensor, p: int, train: torch.Tensor, test: torch.Tenso
                 width[sel], pref[sel], odd[sel] = st["width"], st["preferred_angle"], st["odd_fraction"]
                 torus[sel] = torus_fit(F[:, sel], k, p, train, test).float()
         out.update(gamma=gamma, width=width, preferred_angle=pref, odd_fraction=odd, torus_r2=torus)
+        # exploratory: additive multi-frequency arc model Σ_k r_k g_k(ψ_k) over all key frequencies
+        # (a feature that is a *conjunction* across rings fits neither the single-k nor the additive model)
+        cols = [features_basis_k(p, k, H) for k in keys]
+        out["additive_multi_k_r2"] = _lstsq_r2(torch.cat(cols, 1), F.double(), train, test)[2].float()
     out.update({f"line_{n}": v for n, v in mechanism.line_fractions(F.T, p).items()})
     if alive is not None:
         out["alive"] = alive

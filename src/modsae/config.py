@@ -89,10 +89,19 @@ class SAEConfig:
     batch_size: int = 512
     total_samples: int = 3_000_000
     variant: str = ""  # optional tag, e.g. "surrogate"
+    center: bool = False  # train on mean-centred activations, then fold the mean into b_dec (= b_dec initialised at the data mean)
 
     @property
     def run_id(self) -> str:
         tag = f"_{self.variant}" if self.variant else ""
+        if self.lr != 3e-4:
+            tag += f"_lr{self.lr:g}"
+        if self.total_samples != 3_000_000:
+            tag += f"_n{self.total_samples // 1_000_000}M"
+        if self.arch == "standard":
+            tag += f"_l1{self.l1_coefficient:g}"
+        if self.center:
+            tag += "_c"
         return f"sae_{self.base_run}_{self.site}_{self.arch}_m{self.d_sae}_k{self.k}{tag}_r{self.seed}"
 
     def to_dict(self) -> dict:
